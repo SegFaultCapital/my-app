@@ -26,12 +26,7 @@ st.markdown("""
 USDA_API_KEY = "YOUR_API_KEY_HERE"  # <--- PASTE YOUR ACTUAL USDA API KEY HERE
 
 # --- COOKIE MANAGER (FOR PERMANENT MEMORY) ---
-@st.cache_resource
-def get_cookie_manager():
-    return stx.CookieManager()
-
-cookie_manager = get_cookie_manager()
-
+cookie_manager = stx.CookieManager(key="cookie_manager")
 # --- INITIALIZE OR LOAD PROFILE ---
 default_profile = {
     "gender": "Male", "age": 17, "weight": 75.0, "height": 175.0, 
