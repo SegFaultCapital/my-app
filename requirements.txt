@@ -1,6 +1,6 @@
 streamlit
 pandas
 requests
-pyzbar
-Pillow
 extra-streamlit-components
+google-generativeai
+Pillow
