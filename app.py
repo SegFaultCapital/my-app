@@ -3,32 +3,54 @@ import pandas as pd
 import requests
 from datetime import datetime
 
-# PAGE CONFIG
-st.set_page_config(page_title="My Private Tracker", layout="wide")
+# PAGE CONFIG & CUSTOM CSS (MAKES IT LOOK LIKE AN APP)
+st.set_page_config(page_title="My Health OS", layout="centered", initial_sidebar_state="collapsed")
+
+st.markdown("""
+<style>
+    /* Style the metric cards to look like mobile app widgets */
+    div[data-testid="metric-container"] {
+        background-color: #1E1E1E;
+        border: 1px solid #333;
+        border-radius: 12px;
+        padding: 15px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    }
+    /* Hide the default Streamlit top menu for a cleaner look */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
 
 # --- USDA API CONFIG ---
 USDA_API_KEY = "YOUR_API_KEY_HERE"  # <--- PASTE YOUR ACTUAL USDA API KEY HERE
 
 # --- SESSION STATE INITIALIZATION (PERMANENT DATABASES) ---
+current_date = str(datetime.today().date())
+
+# 1. User Profile Memory
+if "profile" not in st.session_state:
+    st.session_state.profile = {
+        "gender": "Male", "age": 17, "weight": 75.0, 
+        "height": 175.0, "goal_weight": 65.0, "months": 4, "water_goal_ml": 3000
+    }
+
+# 2. Daily Trackers
 if "food_history" not in st.session_state:
     st.session_state.food_history = pd.DataFrame(columns=["Date", "Food_Name", "Calories", "Protein", "Fat", "Carbs"])
 
 if "workout_history" not in st.session_state: 
-    dummy_data = pd.DataFrame({
-        "Date": [pd.to_datetime("2026-01-15").date(), pd.to_datetime("2026-01-22").date()],
-        "Exercise": ["Bench Press", "Bench Press"],
-        "Weight": [50.0, 55.0],
-        "Reps": [8, 8]
-    })
-    st.session_state.workout_history = dummy_data
+    st.session_state.workout_history = pd.DataFrame(columns=["Date", "Exercise", "Weight", "Reps"])
+
+if "weight_history" not in st.session_state:
+    st.session_state.weight_history = pd.DataFrame({"Date": [current_date], "Weight": [75.0]})
+
+if "water_log" not in st.session_state:
+    st.session_state.water_log = {current_date: 0}
 
 # --- EXPANDED INDIAN FOOD DATABASE (IFCT) ---
 indian_db_data = {
-    "Food": [
-        "Roti (Whole Wheat)", "Paneer (Raw)", "Toor Dal (Cooked)", "White Rice (Cooked)", 
-        "Chicken Curry (Standard)", "Mutton Dhansak", "Chicken Fried Rice", "Mutton Curry",
-        "Beef Fry (Kerala Style)", "Pork Vindaloo", "Chicken Tikka (Dry)", "Egg Curry"
-    ],
+    "Food": ["Roti (Whole Wheat)", "Paneer (Raw)", "Toor Dal (Cooked)", "White Rice (Cooked)", "Chicken Curry", "Mutton Dhansak", "Chicken Fried Rice", "Mutton Curry", "Beef Fry", "Pork Vindaloo", "Chicken Tikka (Dry)", "Egg Curry"],
     "Calories": [297, 265, 116, 130, 145, 180, 160, 140, 220, 250, 150, 135],
     "Protein": [9, 18, 6, 2.7, 14, 9, 6, 12, 18, 14, 20, 11],
     "Fats": [1, 20, 0.4, 0.3, 8, 8, 5, 8, 15, 18, 7, 9],
@@ -37,106 +59,132 @@ indian_db_data = {
 indian_df = pd.DataFrame(indian_db_data)
 
 # --- APP LOGIC: CALCULATIONS ---
-def calculate_metrics(weight, height, age, gender, goal_weight, months):
-    if gender == "Male":
-        bmr = (10 * weight) + (6.25 * height) - (5 * age) + 5
+def calculate_metrics(p):
+    if p["gender"] == "Male":
+        bmr = (10 * p["weight"]) + (6.25 * p["height"]) - (5 * p["age"]) + 5
     else:
-        bmr = (10 * weight) + (6.25 * height) - (5 * age) - 161
+        bmr = (10 * p["weight"]) + (6.25 * p["height"]) - (5 * p["age"]) - 161
     tdee = bmr * 1.3 
-    total_kg_to_lose = weight - goal_weight
-    daily_deficit = (total_kg_to_lose * 7700) / (months * 30) if months > 0 else 0
+    total_kg_to_lose = p["weight"] - p["goal_weight"]
+    daily_deficit = (total_kg_to_lose * 7700) / (p["months"] * 30) if p["months"] > 0 else 0
     target_cal = tdee - daily_deficit
-    protein = weight * 2.2
+    protein = p["weight"] * 2.2
     fats = (target_cal * 0.25) / 9
     carbs = (target_cal - (protein * 4) - (fats * 9)) / 4
     return round(target_cal), round(protein), round(fats), round(carbs)
 
-# --- GLOBAL DATE SELECTOR ---
-col_title, col_date = st.columns([3, 1])
-with col_title:
-    st.title("🚀 Health & Lift Tracker")
-with col_date:
-    active_date = st.date_input("📅 Select Date to View/Log", datetime.today().date())
+# --- GLOBAL DATE SELECTOR & NAVIGATION ---
+st.sidebar.title("📱 Menu")
+page = st.sidebar.radio("Go to", ["📊 Dashboard", "🍎 Log Food", "🏋️ Log Workout", "👤 My Profile & Settings"])
 
-# --- SIDEBAR NAVIGATION & SETTINGS ---
-st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", ["📊 Dashboard", "🍎 Log Food", "🏋️ Log Workout", "⚙️ Settings & Data"])
+st.sidebar.divider()
+active_date_obj = st.sidebar.date_input("📅 Log data for:", datetime.today().date())
+active_date = str(active_date_obj)
 
-# We calculate targets globally so the dashboard always has them
-w = st.sidebar.number_input("Weight (kg)", 40.0, 200.0, 75.0, key="w_set")
-h = st.sidebar.number_input("Height (cm)", 100.0, 250.0, 175.0, key="h_set")
-age = st.sidebar.number_input("Age", 10, 100, 17, key="age_set")
-gender = st.sidebar.selectbox("Gender", ["Male", "Female"], key="g_set")
-gw = st.sidebar.number_input("Goal Weight (kg)", 40.0, 200.0, 65.0, key="gw_set")
-m = st.sidebar.number_input("Months to Goal", 1, 12, 4, key="m_set")
+# Ensure water log exists for active date
+if active_date not in st.session_state.water_log:
+    st.session_state.water_log[active_date] = 0
 
-cal_target, prot_target, fat_target, carb_target = calculate_metrics(w, h, age, gender, gw, m)
-
-# Get today's consumed macros based on the active_date
+# Calculate Live Macros
+cal_target, prot_target, fat_target, carb_target = calculate_metrics(st.session_state.profile)
 daily_food = st.session_state.food_history[st.session_state.food_history["Date"] == active_date]
 consumed_cals = daily_food["Calories"].sum()
-consumed_prot = daily_food["Protein"].sum()
-consumed_fat = daily_food["Fat"].sum()
-consumed_carbs = daily_food["Carbs"].sum()
-
 rem_cal = cal_target - consumed_cals
-rem_prot = prot_target - consumed_prot
-rem_fat = fat_target - consumed_fat
-rem_carb = carb_target - consumed_carbs
+rem_prot = prot_target - daily_food["Protein"].sum()
+rem_fat = fat_target - daily_food["Fat"].sum()
+rem_carb = carb_target - daily_food["Carbs"].sum()
 
 # ==========================================
 # PAGE 1: DASHBOARD
 # ==========================================
 if page == "📊 Dashboard":
-    st.subheader(f"📊 Macros for {active_date.strftime('%b %d, %Y')}")
+    st.header("Daily Summary")
+    st.caption(f"Viewing data for: {active_date}")
     
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Calories", f"{rem_cal} kcal", f"Target: {cal_target}", delta_color="off")
-    col2.metric("Protein", f"{rem_prot} g", f"Target: {prot_target}", delta_color="off")
-    col3.metric("Fats", f"{rem_fat} g", f"Target: {fat_target}", delta_color="off")
-    col4.metric("Carbs", f"{rem_carb} g", f"Target: {carb_target}", delta_color="off")
+    # MACRO CARDS
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("🔥 Kcal Left", f"{rem_cal}", f"Goal: {cal_target}", delta_color="off")
+    c2.metric("🥩 Protein Left", f"{rem_prot}g", f"Goal: {prot_target}g", delta_color="off")
+    c3.metric("🥑 Fat Left", f"{rem_fat}g", f"Goal: {fat_target}g", delta_color="off")
+    c4.metric("🍞 Carb Left", f"{rem_carb}g", f"Goal: {carb_target}g", delta_color="off")
+
+    st.divider()
+
+    # WATER TRACKER WIDGET
+    st.subheader("💧 Hydration Tracker")
+    current_water = st.session_state.water_log[active_date]
+    water_goal = st.session_state.profile["water_goal_ml"]
+    progress = min(current_water / water_goal, 1.0)
+    
+    st.progress(progress)
+    st.write(f"**{current_water} ml** / {water_goal} ml")
+    
+    w1, w2, w3, w4 = st.columns(4)
+    if w1.button("+ 250ml (Glass)"):
+        st.session_state.water_log[active_date] += 250
+        st.rerun()
+    if w2.button("+ 500ml (Bottle)"):
+        st.session_state.water_log[active_date] += 500
+        st.rerun()
+    if w3.button("Undo (-250ml)"):
+        st.session_state.water_log[active_date] = max(0, st.session_state.water_log[active_date] - 250)
+        st.rerun()
+
+    st.divider()
+
+    # QUICK WEIGHT LOGGER
+    st.subheader("⚖️ Morning Bodyweight")
+    col_w1, col_w2 = st.columns([3,1])
+    todays_weight = col_w1.number_input("Log today's weight (kg)", value=st.session_state.profile["weight"], step=0.1)
+    if col_w2.button("Save Weight"):
+        new_w = pd.DataFrame({"Date": [active_date], "Weight": [todays_weight]})
+        st.session_state.weight_history = pd.concat([st.session_state.weight_history, new_w], ignore_index=True)
+        # Update profile weight automatically so macros adjust
+        st.session_state.profile["weight"] = todays_weight
+        st.success("Weight logged and macros recalculated!")
+
+    # WEIGHT TREND GRAPH
+    if not st.session_state.weight_history.empty:
+        chart_data = st.session_state.weight_history.copy()
+        chart_data['Date'] = pd.to_datetime(chart_data['Date'])
+        chart_data.set_index("Date", inplace=True)
+        st.line_chart(chart_data, y="Weight", color="#00E676")
 
     st.divider()
     
-    st.subheader("🍔 Meals Logged on this Date")
-    if not daily_food.empty:
-        for idx, row in daily_food.iterrows():
-            c1, c2 = st.columns([5, 1])
-            c1.write(f"**{row['Food_Name']}** — {row['Calories']} kcal (P: {row['Protein']}g | F: {row['Fat']}g | C: {row['Carbs']}g)")
-            if c2.button("❌ Remove", key=f"del_food_{idx}"):
-                st.session_state.food_history = st.session_state.food_history.drop(idx)
-                st.rerun()
-    else:
-        st.info("No food logged for this date yet.")
+    # MEAL SUMMARY
+    with st.expander("🍔 View & Edit Today's Meals", expanded=True):
+        if not daily_food.empty:
+            for idx, row in daily_food.iterrows():
+                c1, c2 = st.columns([5, 1])
+                c1.write(f"**{row['Food_Name']}** — {row['Calories']} kcal")
+                if c2.button("❌", key=f"del_food_{idx}"):
+                    st.session_state.food_history = st.session_state.food_history.drop(idx)
+                    st.rerun()
+        else:
+            st.info("No food logged for this date yet.")
 
 # ==========================================
 # PAGE 2: FOOD LOGGER
 # ==========================================
 elif page == "🍎 Log Food":
-    st.subheader(f"🔍 Search & Log Food for {active_date.strftime('%b %d')}")
-    tab1, tab2, tab3 = st.tabs(["🇺🇸 USDA Database", "🇮🇳 Indian Foods (Local DB)", "📷 Barcode Scan"])
+    st.header("Search & Log Food")
+    tab1, tab2, tab3 = st.tabs(["🇺🇸 USDA", "🇮🇳 Indian Meals", "📷 Barcode Scan"])
 
     def add_to_food_history(cals, prot, fat, carbs, display_text):
-        new_entry = pd.DataFrame([{
-            "Date": active_date,
-            "Food_Name": display_text,
-            "Calories": cals,
-            "Protein": prot,
-            "Fat": fat,
-            "Carbs": carbs
-        }])
+        new_entry = pd.DataFrame([{"Date": active_date, "Food_Name": display_text, "Calories": cals, "Protein": prot, "Fat": fat, "Carbs": carbs}])
         st.session_state.food_history = pd.concat([st.session_state.food_history, new_entry], ignore_index=True)
 
     with tab1:
-        search_query = st.text_input("Search USDA (e.g., 'Raw Chicken Breast')")
+        search_query = st.text_input("Search USDA (e.g., 'Raw Chicken')")
         if search_query:
             url = f"https://api.nal.usda.gov/fdc/v1/foods/search?api_key={USDA_API_KEY}&query={search_query}&pageSize=5"
             try:
                 data = requests.get(url).json()
                 if "foods" in data and len(data["foods"]) > 0:
                     for food in data["foods"]:
-                        desc = food.get("description", "Unknown Food").title()
-                        brand = food.get("brandOwner", "Generic")
+                        desc = food.get("description", "Unknown").title()
+                        brand = food.get("brandOwner", "")
                         base_cals, base_prot, base_fat, base_carbs = 0, 0, 0, 0
                         for nutrient in food.get("foodNutrients", []):
                             name = nutrient.get("nutrientName", "").lower()
@@ -146,14 +194,16 @@ elif page == "🍎 Log Food":
                             elif "total lipid (fat)" in name or name == "fat": base_fat = val
                             elif "carbohydrate" in name: base_carbs = val
                         
-                        with st.expander(f"🍽️ {desc} ({brand})"):
-                            serving_grams = st.number_input(f"Amount consumed (grams)", min_value=1, value=100, key=f"usda_{food['fdcId']}")
+                        with st.expander(f"🍽️ {desc} {f'({brand})' if brand else ''}"):
+                            serving_grams = st.number_input("Amount (grams)", min_value=1, value=100, key=f"usda_{food['fdcId']}")
                             multiplier = serving_grams / 100.0
                             adj_cals, adj_prot, adj_fat, adj_carb = round(base_cals * multiplier), round(base_prot * multiplier), round(base_fat * multiplier), round(base_carbs * multiplier)
                             
                             c1, c2, c3, c4 = st.columns(4)
-                            c1.metric("Calories", f"{adj_cals} kcal")
-                            c2.metric("Protein", f"{adj_prot} g")
+                            c1.metric("Cals", f"{adj_cals}")
+                            c2.metric("Pro", f"{adj_prot}g")
+                            c3.metric("Fat", f"{adj_fat}g")
+                            c4.metric("Carb", f"{adj_carb}g")
                             
                             if st.button("Log this amount", key=f"log_usda_{food['fdcId']}"):
                                 add_to_food_history(adj_cals, adj_prot, adj_fat, adj_carb, f"{serving_grams}g of {desc}")
@@ -164,33 +214,29 @@ elif page == "🍎 Log Food":
                 st.error("API Error. Check your API key.")
 
     with tab2:
-        indian_query = st.text_input("Search Local Indian DB (e.g., 'Dhansak' or 'Pork')")
+        indian_query = st.text_input("Search Indian DB (e.g., 'Paneer')")
         if indian_query:
             results = indian_df[indian_df["Food"].str.contains(indian_query, case=False)]
             if not results.empty:
                 for index, row in results.iterrows():
                     with st.expander(f"🇮🇳 {row['Food']}"):
-                        serving_grams = st.number_input(f"Amount consumed (grams)", min_value=1, value=100, key=f"ind_{index}")
+                        serving_grams = st.number_input("Amount (grams)", min_value=1, value=100, key=f"ind_{index}")
                         multiplier = serving_grams / 100.0
                         adj_cals, adj_prot, adj_fat, adj_carb = round(row["Calories"] * multiplier), round(row["Protein"] * multiplier), round(row["Fats"] * multiplier), round(row["Carbs"] * multiplier)
-                        
-                        c1, c2, c3, c4 = st.columns(4)
-                        c1.metric("Calories", f"{adj_cals} kcal")
-                        c2.metric("Protein", f"{adj_prot} g")
                         
                         if st.button("Log this amount", key=f"log_ind_{index}"):
                             add_to_food_history(adj_cals, adj_prot, adj_fat, adj_carb, f"{serving_grams}g of {row['Food']}")
                             st.success(f"Logged to {active_date}!")
             else:
-                st.warning("Not found in local DB.")
+                st.warning("Not found.")
 
     with tab3:
         st.write("Scan a packaged food barcode.")
         barcode_to_search = ""
-        manual_barcode = st.text_input("Type Barcode Number manually:")
+        manual_barcode = st.text_input("Type Barcode Number:")
         if manual_barcode: barcode_to_search = manual_barcode
             
-        camera_photo = st.camera_input("Take a picture of the barcode")
+        camera_photo = st.camera_input("Take a picture")
         if camera_photo is not None:
             try:
                 from pyzbar.pyzbar import decode
@@ -198,7 +244,7 @@ elif page == "🍎 Log Food":
                 decoded = decode(Image.open(camera_photo))
                 if decoded:
                     barcode_to_search = decoded[0].data.decode("utf-8")
-                    st.success(f"Barcode detected: {barcode_to_search}")
+                    st.success(f"Barcode: {barcode_to_search}")
                 else:
                     st.error("Could not read barcode.")
             except ImportError:
@@ -222,9 +268,6 @@ elif page == "🍎 Log Food":
                         multiplier = serving_grams / 100.0
                         adj_cals, adj_prot, adj_fat, adj_carb = round(base_cals * multiplier), round(base_prot * multiplier), round(base_fat * multiplier), round(base_carbs * multiplier)
                         
-                        c1, c2 = st.columns(2)
-                        c1.metric("Calories", f"{adj_cals} kcal")
-                        
                         if st.button("Log this amount", key=f"log_off_{barcode_to_search}"):
                             add_to_food_history(adj_cals, adj_prot, adj_fat, adj_carb, f"{serving_grams}g of {name}")
                             st.success(f"Logged to {active_date}!")
@@ -237,75 +280,60 @@ elif page == "🍎 Log Food":
 # PAGE 3: WORKOUT LOGGER
 # ==========================================
 elif page == "🏋️ Log Workout":
-    st.subheader(f"🏋️ Lifting Log for {active_date.strftime('%b %d')}")
+    st.header("Lifting Log")
 
     with st.expander("➕ Add New Set", expanded=True):
-        exercise = st.text_input("Exercise Name (e.g., Bench Press)")
+        exercise = st.text_input("Exercise Name")
         weight_lifted = st.number_input("Weight (kg)", 0.0)
         reps = st.number_input("Reps", 0)
         if st.button("Save Set"):
-            new_set = pd.DataFrame([{
-                "Date": active_date, 
-                "Exercise": exercise.title(), 
-                "Weight": weight_lifted, 
-                "Reps": reps
-            }])
+            new_set = pd.DataFrame([{"Date": active_date, "Exercise": exercise.title(), "Weight": weight_lifted, "Reps": reps}])
             st.session_state.workout_history = pd.concat([st.session_state.workout_history, new_set], ignore_index=True)
-            st.success(f"Saved {exercise} to {active_date}!")
+            st.success(f"Saved!")
 
     if not st.session_state.workout_history.empty:
         st.write("📈 **Strength Progression**")
         exercises_logged = st.session_state.workout_history["Exercise"].unique()
-        selected_ex = st.selectbox("Select exercise to graph:", exercises_logged)
+        selected_ex = st.selectbox("Graph exercise:", exercises_logged)
         
         ex_data = st.session_state.workout_history[st.session_state.workout_history["Exercise"] == selected_ex].copy()
-        # Convert to datetime for charting
         ex_data['Date'] = pd.to_datetime(ex_data['Date'])
         max_weight_per_day = ex_data.groupby("Date")["Weight"].max().reset_index()
         max_weight_per_day.set_index("Date", inplace=True)
-        st.line_chart(max_weight_per_day, y="Weight")
-
-        st.write("💪 **Estimated 1-Rep Max (1RM)**")
-        recent_sets = st.session_state.workout_history.sort_values(by=["Date", "Weight"], ascending=[False, False]).drop_duplicates(subset=["Exercise"])
-        for index, row in recent_sets.iterrows():
-            estimated_1rm = round(row["Weight"] * (1 + (row["Reps"] / 30.0)), 1)
-            st.info(f"**{row['Exercise']}**: {estimated_1rm} kg *(from {row['Weight']}kg x {row['Reps']})*")
-
-        with st.expander("🗑️ Edit Workout History"):
-            for idx, row in st.session_state.workout_history.tail(10).iterrows():
-                col_a, col_b = st.columns([4, 1])
-                col_a.write(f"{row['Date']} - **{row['Exercise']}**: {row['Weight']}kg x {row['Reps']}")
-                if col_b.button("Delete", key=f"del_wo_{idx}"):
-                    st.session_state.workout_history = st.session_state.workout_history.drop(idx)
-                    st.rerun()
+        st.line_chart(max_weight_per_day, y="Weight", color="#FF5252")
 
 # ==========================================
-# PAGE 4: SETTINGS & DATA
+# PAGE 4: PROFILE & SETTINGS
 # ==========================================
-elif page == "⚙️ Settings & Data":
-    st.subheader("💾 Backup & Restore Your Data")
-    st.write("Because this app runs securely in your browser without a backend server, download these files weekly to never lose your progress.")
+elif page == "👤 My Profile & Settings":
+    st.header("👤 User Profile")
+    st.write("Update your metrics here. Your daily targets will auto-adjust.")
+    
+    p = st.session_state.profile
+    
+    c1, c2 = st.columns(2)
+    p["gender"] = c1.selectbox("Gender", ["Male", "Female"], index=0 if p["gender"]=="Male" else 1)
+    p["age"] = c2.number_input("Age", 10, 100, int(p["age"]))
+    
+    c3, c4 = st.columns(2)
+    p["weight"] = c3.number_input("Current Weight (kg)", 40.0, 200.0, float(p["weight"]))
+    p["height"] = c4.number_input("Height (cm)", 100.0, 250.0, float(p["height"]))
+    
+    c5, c6 = st.columns(2)
+    p["goal_weight"] = c5.number_input("Goal Weight (kg)", 40.0, 200.0, float(p["goal_weight"]))
+    p["months"] = c6.number_input("Months to Goal", 1, 24, int(p["months"]))
+    
+    p["water_goal_ml"] = st.number_input("Daily Water Goal (ml)", 1000, 6000, int(p["water_goal_ml"]), step=250)
+    
+    st.success("Profile saved automatically.")
+    
+    st.divider()
+    st.header("💾 Backup Data")
     
     col1, col2 = st.columns(2)
-    
     with col1:
-        st.write("**Food History Backup**")
         csv_food = st.session_state.food_history.to_csv(index=False).encode('utf-8')
-        st.download_button("⬇️ Download Food Backup", data=csv_food, file_name='my_food_backup.csv', mime='text/csv')
-        
-        uploaded_food = st.file_uploader("Restore Food History:", type="csv")
-        if uploaded_food is not None:
-            st.session_state.food_history = pd.read_csv(uploaded_food)
-            st.session_state.food_history['Date'] = pd.to_datetime(st.session_state.food_history['Date']).dt.date
-            st.success("Food History Restored!")
-
+        st.download_button("⬇️ Download Food & Water Backup", data=csv_food, file_name='my_food_backup.csv', mime='text/csv')
     with col2:
-        st.write("**Workout History Backup**")
         csv_workout = st.session_state.workout_history.to_csv(index=False).encode('utf-8')
         st.download_button("⬇️ Download Workout Backup", data=csv_workout, file_name='my_workout_backup.csv', mime='text/csv')
-        
-        uploaded_wo = st.file_uploader("Restore Workout History:", type="csv")
-        if uploaded_wo is not None:
-            st.session_state.workout_history = pd.read_csv(uploaded_wo)
-            st.session_state.workout_history['Date'] = pd.to_datetime(st.session_state.workout_history['Date']).dt.date
-            st.success("Workout History Restored!")
