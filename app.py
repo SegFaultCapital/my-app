@@ -11,8 +11,8 @@ from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 import extra_streamlit_components as stx
 import google.generativeai as genai
 
-# --- 1. PROFESSIONAL UI CONFIG ---
-st.set_page_config(page_title="Health OS v11.1", layout="wide", initial_sidebar_state="expanded")
+# --- 1. UI CONFIG ---
+st.set_page_config(page_title="Health OS v11.2", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
@@ -20,8 +20,6 @@ st.markdown("""
     div[data-testid="stVerticalBlock"] > div:has(div.stMetric) {
         background-color: #161B22; border-radius: 12px; padding: 15px; border: 1px solid #30363D;
     }
-    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
-    .stTabs [data-baseweb="tab"] { background-color: #21262D; border-radius: 8px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -40,13 +38,10 @@ if "profile" not in st.session_state:
     }
 
 # --- 3. DATABASES & MATH ---
-# IFCT-based Indian Database
 indian_db = pd.DataFrame({
-    "Food": ["Roti (Whole Wheat)", "Paneer (Raw)", "Toor Dal (Cooked)", "White Rice (Cooked)", "Chicken Curry", "Dal Makhani", "Egg Bhurji", "Mutton Dhansak", "Fish Fry"],
-    "Cals": [297, 265, 116, 130, 145, 160, 185, 180, 220],
-    "P": [9, 18, 6, 2.7, 14, 5, 12, 9, 18],
-    "F": [1, 20, 0.4, 0.3, 8, 9, 14, 8, 12],
-    "C": [61, 1.2, 21, 28, 5, 15, 3, 18, 5]
+    "Food": ["Roti", "Paneer", "Toor Dal", "Rice", "Chicken Curry", "Dal Makhani", "Egg Bhurji"],
+    "Cals": [297, 265, 116, 130, 145, 160, 185],
+    "P": [9, 18, 6, 2.7, 14, 5, 12], "F": [1, 20, 0.4, 0.3, 8, 9, 14], "C": [61, 1.2, 21, 28, 5, 15, 3]
 })
 
 def get_navy_bf(p):
@@ -65,7 +60,7 @@ def get_macros(p):
     target_cal = tdee - 500
     return round(target_cal), round(lbm * 2.2), round((target_cal*0.25)/9), round((target_cal*0.45)/4)
 
-# --- 4. BARCODE LOGIC ---
+# --- 4. SCANNER LOGIC ---
 class BarcodeProcessor(VideoProcessorBase):
     def __init__(self): self.last_code = None
     def recv(self, frame):
@@ -73,23 +68,27 @@ class BarcodeProcessor(VideoProcessorBase):
         for obj in decode(img): self.last_code = obj.data.decode("utf-8")
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- 5. NAVIGATION ---
+# --- 5. NAVIGATION & DATE LOCK ---
 with st.sidebar:
-    st.title("🛡️ Health OS v11.1")
-    nav = st.radio("Navigate", ["📊 Dashboard", "🍴 Food Logger", "🏋️ Progress", "⚙️ Profile Settings"])
-    sel_date = str(st.date_input("Date context:", datetime.today().date()))
+    st.title("🛡️ Health OS v11.2")
+    nav = st.radio("Navigate", ["📊 Dashboard", "🍴 Food Logger", "⚙️ Profile Settings"])
+    # LOCK: max_value stops you from logging in the future
+    sel_date = str(st.date_input("Date context:", datetime.today().date(), max_value=datetime.today().date()))
 
 if "food_history" not in st.session_state: 
     st.session_state.food_history = pd.DataFrame(columns=["Date", "Name", "Cals", "P", "F", "C"])
+if "water_history" not in st.session_state:
+    st.session_state.water_history = {}
 
 # ==========================================
-# PAGE: DASHBOARD
+# PAGE: DASHBOARD (Editing & Water)
 # ==========================================
 if nav == "📊 Dashboard":
-    st.header(f"Summary for {sel_date}")
+    st.header(f"Day Context: {sel_date}")
     cal_t, prot_t, fat_t, carb_t = get_macros(st.session_state.profile)
     daily = st.session_state.food_history[st.session_state.food_history['Date'] == sel_date]
     
+    # MACRO SUMMARY
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Kcal Left", f"{cal_t - daily['Cals'].sum()}")
     c2.metric("Protein Left", f"{prot_t - daily['P'].sum()}g")
@@ -97,89 +96,98 @@ if nav == "📊 Dashboard":
     c4.metric("Carbs Left", f"{carb_t - daily['C'].sum()}g")
 
     st.divider()
-    st.subheader("🧬 Body Composition")
-    v1, v2, v3 = st.columns(3)
-    v1.metric("Body Fat", f"{st.session_state.profile['bf']}%")
-    v2.metric("Weight", f"{st.session_state.profile['weight']}kg")
-    v3.metric("Lean Mass", f"{round(st.session_state.profile['weight']*(1-st.session_state.profile['bf']/100), 1)}kg")
     
-    with st.expander("🍔 View Logged Meals", expanded=True):
+    # WATER TRACKER
+    st.subheader("💧 Hydration")
+    if sel_date not in st.session_state.water_history: st.session_state.water_history[sel_date] = 0
+    w_curr = st.session_state.water_history[sel_date]
+    w_goal = st.session_state.profile["water_goal"]
+    st.progress(min(w_curr / w_goal, 1.0))
+    st.write(f"Consumed: **{w_curr}ml** / {w_goal}ml")
+    
+    wc1, wc2, wc3 = st.columns(3)
+    if wc1.button("+ 250ml"): st.session_state.water_history[sel_date] += 250; st.rerun()
+    if wc2.button("+ 500ml"): st.session_state.water_history[sel_date] += 500; st.rerun()
+    if wc3.button("Reset Water"): st.session_state.water_history[sel_date] = 0; st.rerun()
+
+    st.divider()
+
+    # EDIT/REMOVE MEALS
+    with st.expander("🍔 Manage Logged Meals", expanded=True):
         if not daily.empty:
-            st.dataframe(daily[["Name", "Cals", "P", "F", "C"]], use_container_width=True)
-        else: st.info("No meals logged yet.")
+            for idx, row in daily.iterrows():
+                col_n, col_d = st.columns([5, 1])
+                col_n.write(f"**{row['Name']}** | {row['Cals']} kcal")
+                if col_d.button("❌", key=f"del_{idx}"):
+                    st.session_state.food_history = st.session_state.food_history.drop(idx)
+                    st.rerun()
+        else: st.info("No meals logged for this date.")
 
 # ==========================================
-# PAGE: FOOD LOGGER (THE COMPLETE 4-WAY SYSTEM)
+# PAGE: FOOD LOGGER (4-WAY)
 # ==========================================
 elif nav == "🍴 Food Logger":
-    st.header("Log Your Fuel")
-    tab1, tab2, tab3, tab4 = st.tabs(["🇺🇸 USDA", "🇮🇳 Indian (IFCT)", "🤖 AI Vision", "⚡ Live Barcode"])
+    st.header("Daily Fuel")
+    t1, t2, t3, t4 = st.tabs(["🇺🇸 USDA", "🇮🇳 Indian", "🤖 AI Vision", "⚡ Barcode"])
     
     def log_meal(n, c, p, f, carb):
         new_row = pd.DataFrame([{"Date": sel_date, "Name": n, "Cals": c, "P": p, "F": f, "C": carb}])
         st.session_state.food_history = pd.concat([st.session_state.food_history, new_row], ignore_index=True)
         st.success(f"Logged {n}!")
 
-    with tab1:
-        u_query = st.text_input("Search USDA Database")
-        if u_query:
-            url = f"https://api.nal.usda.gov/fdc/v1/foods/search?api_key={USDA_KEY}&query={u_query}&pageSize=5"
+    with t1:
+        u_q = st.text_input("USDA Search")
+        if u_q:
+            url = f"https://api.nal.usda.gov/fdc/v1/foods/search?api_key={USDA_KEY}&query={u_q}&pageSize=5"
             foods = requests.get(url).json().get("foods", [])
             for f in foods:
-                with st.expander(f"{f['description']} ({f.get('brandOwner', 'Generic')})"):
-                    grams = st.number_input("Grams", 1, 1000, 100, key=f"u_{f['fdcId']}")
-                    # Simple macro parsing
-                    c, p, ft, cb = 0, 0, 0, 0
+                with st.expander(f['description']):
+                    g = st.number_input("Grams", 1, 1000, 100, key=f"u_{f['fdcId']}")
+                    c, p = 0, 0
                     for n in f['foodNutrients']:
-                        if n['nutrientId'] == 1008: c = n['value'] * (grams/100)
-                        if n['nutrientId'] == 1003: p = n['value'] * (grams/100)
-                    if st.button("Log USDA", key=f"btn_u_{f['fdcId']}"):
-                        log_meal(f['description'], round(c), round(p), 0, 0)
+                        if n['nutrientId'] == 1008: c = n['value'] * (g/100)
+                        if n['nutrientId'] == 1003: p = n['value'] * (g/100)
+                    if st.button("Log", key=f"b_u_{f['fdcId']}"): log_meal(f['description'], round(c), round(p), 0, 0)
 
-    with tab2:
-        i_query = st.text_input("Search Indian Database")
-        if i_query:
-            res = indian_db[indian_db['Food'].str.contains(i_query, case=False)]
+    with t2:
+        i_q = st.text_input("Indian Search")
+        if i_q:
+            res = indian_db[indian_db['Food'].str.contains(i_q, case=False)]
             for idx, row in res.iterrows():
                 with st.expander(row['Food']):
-                    g = st.number_input("Grams", 1, 1000, 100, key=f"i_{idx}")
-                    if st.button("Log IFCT", key=f"btn_i_{idx}"):
-                        log_meal(row['Food'], round(row['Cals']*g/100), round(row['P']*g/100), round(row['F']*g/100), round(row['C']*g/100))
+                    g_i = st.number_input("Grams", 1, 1000, 100, key=f"i_{idx}")
+                    if st.button("Log", key=f"b_i_{idx}"): log_meal(row['Food'], round(row['Cals']*g_i/100), round(row['P']*g_i/100), round(row['F']*g_i/100), round(row['C']*g_i/100))
 
-    with tab3:
-        cam = st.camera_input("Snap for AI Analysis")
-        if cam and st.button("Analyze with Gemini"):
+    with t3:
+        cam = st.camera_input("AI Snap")
+        if cam and st.button("Analyze"):
             genai.configure(api_key=GEMINI_KEY)
             model = genai.GenerativeModel('gemini-1.5-flash')
-            prompt = "Analyze food image. Return JSON ONLY: {'name': str, 'calories': int, 'protein': int, 'fat': int, 'carbs': int} for 100g."
-            res = model.generate_content([prompt, Image.open(cam)])
-            data = json.loads(res.text.strip().replace("```json", "").replace("```", ""))
-            st.write(f"### Detected: {data['name']}")
+            res = model.generate_content(["Return JSON only: {'name':str, 'calories':int, 'protein':int, 'fat':int, 'carbs':int} per 100g", Image.open(cam)])
+            d = json.loads(res.text.strip().replace("```json", "").replace("```", ""))
+            st.write(f"### Detected: {d['name']}")
             g_ai = st.number_input("Portion Grams", 1, 1000, 100)
-            if st.button("Log AI Meal"):
-                log_meal(data['name'], round(data['calories']*g_ai/100), round(data['protein']*g_ai/100), round(data['fat']*g_ai/100), round(data['carbs']*g_ai/100))
+            if st.button("Confirm AI Log"): log_meal(d['name'], round(d['calories']*g_ai/100), round(d['protein']*g_ai/100), round(d['fat']*g_ai/100), round(d['carbs']*g_ai/100))
 
-    with tab4:
-        st.write("Instant Barcode Detection")
-        scanner = webrtc_streamer(key="live_bar", video_processor_factory=BarcodeProcessor)
-        if scanner.video_processor and scanner.video_processor.last_code:
-            st.success(f"Code: {scanner.video_processor.last_code}")
-            # Placeholder for Open Food Facts logic...
+    with t4:
+        st.write("Live Scanner (30fps)")
+        ctx = webrtc_streamer(key="barcode", video_processor_factory=BarcodeProcessor)
+        if ctx.video_processor and ctx.video_processor.last_code: st.success(f"Barcode: {ctx.video_processor.last_code}")
 
 # ==========================================
-# PAGE: PROFILE SETTINGS (PERMANENT)
+# PAGE: PROFILE (MEMORY)
 # ==========================================
 elif nav == "⚙️ Profile Settings":
-    st.header("Body Variables")
+    st.header("User Stats & BF% Calculator")
     p = st.session_state.profile
-    p['weight'] = st.number_input("Current Weight (kg)", value=float(p['weight']))
+    p['weight'] = st.number_input("Weight (kg)", value=float(p['weight']))
     p['height'] = st.number_input("Height (cm)", value=float(p['height']))
-    p['neck'] = st.number_input("Neck Circ. (cm)", value=float(p['neck']))
-    p['waist'] = st.number_input("Waist Circ. (cm)", value=float(p['waist']))
-    p['goal_bf'] = st.number_input("Goal Body Fat %", value=float(p['goal_bf']))
+    p['neck'] = st.number_input("Neck (cm)", value=float(p['neck']))
+    p['waist'] = st.number_input("Waist (cm)", value=float(p['waist']))
+    p['water_goal'] = st.number_input("Water Goal (ml)", value=int(p['water_goal']))
     
-    if st.button("💾 Permanently Save & Lock Variables"):
+    if st.button("💾 Permanently Lock Variable Memory"):
         p['bf'] = get_navy_bf(p)
-        cookie_manager.set("p_data", p)
+        cookie_manager.set("p_v11_2", p)
         st.session_state.profile = p
-        st.success("Stats locked into browser memory!")
+        st.success("Variables locked and Body Fat recalculated!")
