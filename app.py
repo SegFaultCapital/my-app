@@ -1,14 +1,15 @@
 import streamlit as st
 import pandas as pd
 import requests
+import math
 from datetime import datetime
+import extra_streamlit_components as stx
 
-# PAGE CONFIG & CUSTOM CSS (MAKES IT LOOK LIKE AN APP)
+# PAGE CONFIG
 st.set_page_config(page_title="My Health OS", layout="centered", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
-    /* Style the metric cards to look like mobile app widgets */
     div[data-testid="metric-container"] {
         background-color: #1E1E1E;
         border: 1px solid #333;
@@ -16,7 +17,6 @@ st.markdown("""
         padding: 15px;
         box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     }
-    /* Hide the default Streamlit top menu for a cleaner look */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
 </style>
@@ -25,17 +25,30 @@ st.markdown("""
 # --- USDA API CONFIG ---
 USDA_API_KEY = "YOUR_API_KEY_HERE"  # <--- PASTE YOUR ACTUAL USDA API KEY HERE
 
-# --- SESSION STATE INITIALIZATION (PERMANENT DATABASES) ---
+# --- COOKIE MANAGER (FOR PERMANENT MEMORY) ---
+@st.cache_resource
+def get_cookie_manager():
+    return stx.CookieManager()
+
+cookie_manager = get_cookie_manager()
+
+# --- INITIALIZE OR LOAD PROFILE ---
+default_profile = {
+    "gender": "Male", "age": 17, "weight": 75.0, "height": 175.0, 
+    "goal_weight": 65.0, "months": 4, "water_goal_ml": 3000,
+    "bf_percent": 15.0, "goal_bf_percent": 10.0, "neck_cm": 38.0, "waist_cm": 80.0, "hip_cm": 95.0
+}
+
+# Try to load profile from cookies, otherwise use default
+saved_profile = cookie_manager.get("user_profile")
+if saved_profile:
+    st.session_state.profile = saved_profile
+elif "profile" not in st.session_state:
+    st.session_state.profile = default_profile
+
+# --- SESSION STATE INITIALIZATION (DATABASES) ---
 current_date = str(datetime.today().date())
 
-# 1. User Profile Memory
-if "profile" not in st.session_state:
-    st.session_state.profile = {
-        "gender": "Male", "age": 17, "weight": 75.0, 
-        "height": 175.0, "goal_weight": 65.0, "months": 4, "water_goal_ml": 3000
-    }
-
-# 2. Daily Trackers
 if "food_history" not in st.session_state:
     st.session_state.food_history = pd.DataFrame(columns=["Date", "Food_Name", "Calories", "Protein", "Fat", "Carbs"])
 
@@ -43,7 +56,7 @@ if "workout_history" not in st.session_state:
     st.session_state.workout_history = pd.DataFrame(columns=["Date", "Exercise", "Weight", "Reps"])
 
 if "weight_history" not in st.session_state:
-    st.session_state.weight_history = pd.DataFrame({"Date": [current_date], "Weight": [75.0]})
+    st.session_state.weight_history = pd.DataFrame({"Date": [current_date], "Weight": [st.session_state.profile["weight"]]})
 
 if "water_log" not in st.session_state:
     st.session_state.water_log = {current_date: 0}
@@ -59,33 +72,45 @@ indian_db_data = {
 indian_df = pd.DataFrame(indian_db_data)
 
 # --- APP LOGIC: CALCULATIONS ---
+def calculate_bf_navy(gender, height, neck, waist, hip=None):
+    try:
+        if gender == "Male":
+            return 495.0 / (1.0324 - 0.19077 * math.log10(waist - neck) + 0.15456 * math.log10(height)) - 450.0
+        else:
+            return 495.0 / (1.29579 - 0.35004 * math.log10(waist + hip - neck) + 0.22100 * math.log10(height)) - 450.0
+    except:
+        return 15.0 # Fallback if math error
+
 def calculate_metrics(p):
-    if p["gender"] == "Male":
-        bmr = (10 * p["weight"]) + (6.25 * p["height"]) - (5 * p["age"]) + 5
-    else:
-        bmr = (10 * p["weight"]) + (6.25 * p["height"]) - (5 * p["age"]) - 161
-    tdee = bmr * 1.3 
+    # Use Katch-McArdle BMR since we have BF%
+    lean_body_mass = p["weight"] * (1 - (p["bf_percent"] / 100.0))
+    bmr = 370 + (21.6 * lean_body_mass)
+    
+    tdee = bmr * 1.3 # Light Activity Multiplier
+    
     total_kg_to_lose = p["weight"] - p["goal_weight"]
     daily_deficit = (total_kg_to_lose * 7700) / (p["months"] * 30) if p["months"] > 0 else 0
+    
     target_cal = tdee - daily_deficit
-    protein = p["weight"] * 2.2
+    
+    # 2.2g of protein per kg of LEAN mass for heavy lifters
+    protein = lean_body_mass * 2.2
     fats = (target_cal * 0.25) / 9
     carbs = (target_cal - (protein * 4) - (fats * 9)) / 4
+    
     return round(target_cal), round(protein), round(fats), round(carbs)
 
-# --- GLOBAL DATE SELECTOR & NAVIGATION ---
+# --- GLOBAL NAVIGATION ---
 st.sidebar.title("📱 Menu")
-page = st.sidebar.radio("Go to", ["📊 Dashboard", "🍎 Log Food", "🏋️ Log Workout", "👤 My Profile & Settings"])
+page = st.sidebar.radio("Go to", ["📊 Dashboard", "🍎 Log Food", "🏋️ Log Workout", "👤 My Profile (Settings)"])
 
 st.sidebar.divider()
 active_date_obj = st.sidebar.date_input("📅 Log data for:", datetime.today().date())
 active_date = str(active_date_obj)
 
-# Ensure water log exists for active date
 if active_date not in st.session_state.water_log:
     st.session_state.water_log[active_date] = 0
 
-# Calculate Live Macros
 cal_target, prot_target, fat_target, carb_target = calculate_metrics(st.session_state.profile)
 daily_food = st.session_state.food_history[st.session_state.food_history["Date"] == active_date]
 consumed_cals = daily_food["Calories"].sum()
@@ -101,10 +126,19 @@ if page == "📊 Dashboard":
     st.header("Daily Summary")
     st.caption(f"Viewing data for: {active_date}")
     
+    # BODY COMPOSITION CARDS
+    c_a, c_b, c_c = st.columns(3)
+    c_a.metric("⚖️ Weight", f"{st.session_state.profile['weight']} kg", f"Goal: {st.session_state.profile['goal_weight']} kg", delta_color="off")
+    c_b.metric("🧬 Body Fat", f"{round(st.session_state.profile['bf_percent'], 1)}%", f"Goal: {st.session_state.profile['goal_bf_percent']}%", delta_color="off")
+    lbm = round(st.session_state.profile['weight'] * (1 - (st.session_state.profile['bf_percent'] / 100.0)), 1)
+    c_c.metric("💪 Lean Mass", f"{lbm} kg")
+    
+    st.divider()
+    
     # MACRO CARDS
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("🔥 Kcal Left", f"{rem_cal}", f"Goal: {cal_target}", delta_color="off")
-    c2.metric("🥩 Protein Left", f"{rem_prot}g", f"Goal: {prot_target}g", delta_color="off")
+    c2.metric("🥩 Pro Left", f"{rem_prot}g", f"Goal: {prot_target}g", delta_color="off")
     c3.metric("🥑 Fat Left", f"{rem_fat}g", f"Goal: {fat_target}g", delta_color="off")
     c4.metric("🍞 Carb Left", f"{rem_carb}g", f"Goal: {carb_target}g", delta_color="off")
 
@@ -120,38 +154,12 @@ if page == "📊 Dashboard":
     st.write(f"**{current_water} ml** / {water_goal} ml")
     
     w1, w2, w3, w4 = st.columns(4)
-    if w1.button("+ 250ml (Glass)"):
-        st.session_state.water_log[active_date] += 250
-        st.rerun()
-    if w2.button("+ 500ml (Bottle)"):
-        st.session_state.water_log[active_date] += 500
-        st.rerun()
-    if w3.button("Undo (-250ml)"):
-        st.session_state.water_log[active_date] = max(0, st.session_state.water_log[active_date] - 250)
-        st.rerun()
+    if w1.button("+ 250ml"): st.session_state.water_log[active_date] += 250; st.rerun()
+    if w2.button("+ 500ml"): st.session_state.water_log[active_date] += 500; st.rerun()
+    if w3.button("Undo (-250ml)"): st.session_state.water_log[active_date] = max(0, st.session_state.water_log[active_date] - 250); st.rerun()
 
     st.divider()
 
-    # QUICK WEIGHT LOGGER
-    st.subheader("⚖️ Morning Bodyweight")
-    col_w1, col_w2 = st.columns([3,1])
-    todays_weight = col_w1.number_input("Log today's weight (kg)", value=st.session_state.profile["weight"], step=0.1)
-    if col_w2.button("Save Weight"):
-        new_w = pd.DataFrame({"Date": [active_date], "Weight": [todays_weight]})
-        st.session_state.weight_history = pd.concat([st.session_state.weight_history, new_w], ignore_index=True)
-        # Update profile weight automatically so macros adjust
-        st.session_state.profile["weight"] = todays_weight
-        st.success("Weight logged and macros recalculated!")
-
-    # WEIGHT TREND GRAPH
-    if not st.session_state.weight_history.empty:
-        chart_data = st.session_state.weight_history.copy()
-        chart_data['Date'] = pd.to_datetime(chart_data['Date'])
-        chart_data.set_index("Date", inplace=True)
-        st.line_chart(chart_data, y="Weight", color="#00E676")
-
-    st.divider()
-    
     # MEAL SUMMARY
     with st.expander("🍔 View & Edit Today's Meals", expanded=True):
         if not daily_food.empty:
@@ -303,37 +311,60 @@ elif page == "🏋️ Log Workout":
         st.line_chart(max_weight_per_day, y="Weight", color="#FF5252")
 
 # ==========================================
-# PAGE 4: PROFILE & SETTINGS
+# PAGE 4: PROFILE & SETTINGS (WITH COOKIE SAVING)
 # ==========================================
-elif page == "👤 My Profile & Settings":
-    st.header("👤 User Profile")
-    st.write("Update your metrics here. Your daily targets will auto-adjust.")
+elif page == "👤 My Profile (Settings)":
+    st.header("👤 Body Metrics & Goals")
+    st.write("Enter your stats here. The app will permanently remember them and use the Katch-McArdle formula for pinpoint accuracy.")
     
     p = st.session_state.profile
     
+    # 1. Basic Stats
     c1, c2 = st.columns(2)
     p["gender"] = c1.selectbox("Gender", ["Male", "Female"], index=0 if p["gender"]=="Male" else 1)
     p["age"] = c2.number_input("Age", 10, 100, int(p["age"]))
     
+    # 2. Body Composition
+    st.subheader("⚖️ Weight & Body Fat")
     c3, c4 = st.columns(2)
     p["weight"] = c3.number_input("Current Weight (kg)", 40.0, 200.0, float(p["weight"]))
     p["height"] = c4.number_input("Height (cm)", 100.0, 250.0, float(p["height"]))
     
+    st.write("**US Navy Body Fat Calculator:**")
+    c_n, c_w, c_h = st.columns(3)
+    p["neck_cm"] = c_n.number_input("Neck Circ. (cm)", 20.0, 80.0, float(p.get("neck_cm", 38.0)))
+    p["waist_cm"] = c_w.number_input("Waist Circ. (cm)", 40.0, 150.0, float(p.get("waist_cm", 80.0)))
+    
+    if p["gender"] == "Female":
+        p["hip_cm"] = c_h.number_input("Hip Circ. (cm)", 40.0, 150.0, float(p.get("hip_cm", 95.0)))
+    else:
+        p["hip_cm"] = None
+        
+    if st.button("Calculate & Apply BF%"):
+        calculated_bf = calculate_bf_navy(p["gender"], p["height"], p["neck_cm"], p["waist_cm"], p["hip_cm"])
+        p["bf_percent"] = round(calculated_bf, 1)
+        st.success(f"Body Fat calculated at {p['bf_percent']}%!")
+
+    # Manual BF% Override just in case
+    p["bf_percent"] = st.number_input("Current Body Fat % (Manual Override)", 3.0, 50.0, float(p["bf_percent"]))
+    
+    # 3. Goals
+    st.subheader("🎯 Goals")
     c5, c6 = st.columns(2)
-    p["goal_weight"] = c5.number_input("Goal Weight (kg)", 40.0, 200.0, float(p["goal_weight"]))
-    p["months"] = c6.number_input("Months to Goal", 1, 24, int(p["months"]))
+    p["goal_weight"] = c5.number_input("Target Weight (kg)", 40.0, 200.0, float(p["goal_weight"]))
+    p["goal_bf_percent"] = c6.number_input("Target Body Fat %", 3.0, 50.0, float(p.get("goal_bf_percent", 10.0)))
     
-    p["water_goal_ml"] = st.number_input("Daily Water Goal (ml)", 1000, 6000, int(p["water_goal_ml"]), step=250)
+    c7, c8 = st.columns(2)
+    p["months"] = c7.number_input("Months to Goal", 1, 24, int(p["months"]))
+    p["water_goal_ml"] = c8.number_input("Daily Water Goal (ml)", 1000, 6000, int(p["water_goal_ml"]), step=250)
     
-    st.success("Profile saved automatically.")
-    
-    st.divider()
-    st.header("💾 Backup Data")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        csv_food = st.session_state.food_history.to_csv(index=False).encode('utf-8')
-        st.download_button("⬇️ Download Food & Water Backup", data=csv_food, file_name='my_food_backup.csv', mime='text/csv')
-    with col2:
-        csv_workout = st.session_state.workout_history.to_csv(index=False).encode('utf-8')
-        st.download_button("⬇️ Download Workout Backup", data=csv_workout, file_name='my_workout_backup.csv', mime='text/csv')
+    # SAVE TO COOKIE
+    if st.button("💾 Save Profile Permanently"):
+        cookie_manager.set("user_profile", p, key="save_profile_cookie")
+        st.session_state.profile = p
+        
+        # Also log the weight to the weight graph
+        new_w = pd.DataFrame({"Date": [active_date], "Weight": [p["weight"]]})
+        st.session_state.weight_history = pd.concat([st.session_state.weight_history, new_w], ignore_index=True)
+        
+        st.success("Profile saved to your browser! It will auto-load tomorrow.")
