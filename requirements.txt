@@ -4,3 +4,6 @@ requests
 extra-streamlit-components
 google-generativeai
 Pillow
+streamlit-webrtc
+pyzbar
+av
